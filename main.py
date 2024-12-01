@@ -3,7 +3,7 @@ import pandas as pd
 # import pandas_ta as ta
 
 # import talib as ta
-import finta as TA
+import finta as fintaTA
 
 import logging
 import argparse
@@ -19,6 +19,8 @@ from sklearn.metrics import classification_report, confusion_matrix, precision_s
 from sklearn.preprocessing import StandardScaler
 from imblearn.over_sampling import SMOTE
 import optuna
+
+TA = fintaTA.TA
 
 # Configure logging
 logging.basicConfig(
@@ -122,56 +124,6 @@ def resample_dataframe(df, target_timeframe):
     return resampled_df
 
 
-
-# def calculate_indicators(df):
-#     """
-#     Calculates technical indicators and adds them to the DataFrame.
-
-#     Parameters:
-#         df (DataFrame): DataFrame containing at least the 'close' price column.
-
-#     Returns:
-#         DataFrame: The original DataFrame with new indicator columns added.
-#     """
-#     try:
-#         # Moving Averages
-#         df['MA20'] = df['close'].rolling(window=20).mean()
-#         df['MA50'] = df['close'].rolling(window=50).mean()
-        
-#         # Relative Strength Index (RSI)
-#         delta = df['close'].diff()
-#         up = delta.clip(lower=0)
-#         down = -1 * delta.clip(upper=0)
-#         period = 14
-#         gain = up.rolling(window=period).mean()
-#         loss = down.rolling(window=period).mean()
-#         RS = gain / loss
-#         df['RSI'] = 100.0 - (100.0 / (1.0 + RS))
-
-#         # Adding Symbolic Features
-#         df['is_oversold'] = np.where(df['RSI'] < 30, 1, 0)
-#         df['is_overbought'] = np.where(df['RSI'] > 70, 1, 0)
-        
-#         # Moving Average Convergence Divergence (MACD)
-#         exp1 = df['close'].ewm(span=12, adjust=False).mean()
-#         exp2 = df['close'].ewm(span=26, adjust=False).mean()
-#         df['MACD'] = exp1 - exp2
-
-#         logging.info("Calculated technical indicators.")
-#         return df
-#     except Exception as e:
-#         logging.error(f"Error calculating indicators: {e}")
-#         return df
-
-
-# import pandas as pd
-# # import pandas_ta as ta
-# import logging
-
-# from finta import TA
-# import pandas as pd
-# import logging
-
 def calculate_indicators(df):
     """
     Calculates technical indicators and adds them to the DataFrame using Finta.
@@ -189,10 +141,15 @@ def calculate_indicators(df):
             logging.error(f"Input DataFrame must contain the following columns: {required_columns}")
             return df
 
-        # Add Moving Averages
-        df['MA20'] = TA.SMA(df, 20)  # 20-period Simple Moving Average
-        df['MA50'] = TA.SMA(df, 50)  # 50-period Simple Moving Average
 
+        # Add Moving Averages
+        df['SMA20'] = TA.SMA(df, 20)  # 20-period Simple Moving Average
+        df['SMA50'] = TA.SMA(df, 50)  # 50-period Simple Moving Average
+        
+        # Add Moving Averages
+        df['EMA20'] = TA.EMA(df, 20)  # 20-period Simple Moving Average
+        df['EMA50'] = TA.EMA(df, 50)  # 50-period Simple Moving Average
+        
         # Add RSI
         df['RSI'] = TA.RSI(df, 14)  # 14-period Relative Strength Index
 
@@ -217,10 +174,17 @@ def calculate_indicators(df):
         df['ATR'] = TA.ATR(df, 14)  # 14-period Average True Range
 
         # Add Numeric Trend
-        df['trend'] = (df['MA20'] > df['MA50']).astype(int) * 2 - 1  # 1 for bullish, -1 for bearish
+        df['trend'] = (df['SMA20'] > df['SMA50']).astype(int) * 2 - 1  # 1 for bullish, -1 for bearish
 
         df['PCP'] = df['close'].pct_change() * 100
         df['PPO'] = ((df['EMA20'] - df['EMA50']) / df['EMA50']) * 100
+
+        df['Volatility_Adjusted_ROC'] = df['ROC'] / df['ATR']
+        df['Rel_Price_SMA20'] = df['close'] / df['SMA20']
+        df['MACD_Price_Divergence'] = df['close'].diff() - df['MACD_Histogram'].diff()
+        # df['is_green'] = (df['close'] > df['open']).astype(int)
+        df['candle_body_percent'] = abs(df['close'] - df['open']) / (df['high'] - df['low']) * 100
+
 
         # Fill NaN values (optional)
         df.fillna(method='bfill', inplace=True)
@@ -232,7 +196,102 @@ def calculate_indicators(df):
         logging.error(f"Error calculating indicators: {e}")
         return df
 
+def add_consecutive_green_candles_feature(df):
+    """
+    Adds a feature to count how many green candles follow the current one.
 
+    Parameters:
+        df (DataFrame): DataFrame containing 'open' and 'close' price columns.
+
+    Returns:
+        DataFrame: Original DataFrame with an additional 'consecutive_green' column.
+    """
+    try:
+        # Validate required columns
+        required_columns = {'open', 'close'}
+        if not required_columns.issubset(df.columns):
+            logging.error(f"Input DataFrame must contain the following columns: {required_columns}")
+            return df
+
+        # Add a binary column to indicate if the candle is green
+        df['is_green'] = (df['close'] > df['open']).astype(int)
+
+        # Calculate the number of consecutive green candles that follow each candle
+        consecutive_green = []
+        n = len(df)
+        for i in range(n):
+            count = 0
+            for j in range(i + 1, n):
+                if df.loc[j, 'is_green'] == 1:
+                    count += 1
+                else:
+                    break
+            consecutive_green.append(count)
+
+        df['consecutive_green'] = consecutive_green
+
+        # Drop 'is_green' if not needed for further analysis
+        df.drop(columns=['is_green'], inplace=True)
+
+        logging.info("Added 'consecutive_green' feature.")
+        return df
+
+    except Exception as e:
+        logging.error(f"Error adding 'consecutive_green' feature: {e}")
+        return df
+
+def add_predictive_candle_features(df):
+    """
+    Adds features predicting how many green and red candles will follow the current candle.
+
+    Parameters:
+        df (DataFrame): DataFrame containing 'open' and 'close' price columns.
+
+    Returns:
+        DataFrame: Original DataFrame with 'future_green' and 'future_red' columns.
+    """
+    try:
+        # Validate required columns
+        required_columns = {'open', 'close'}
+        if not required_columns.issubset(df.columns):
+            logging.error(f"Input DataFrame must contain the following columns: {required_columns}")
+            return df
+
+        # Determine if each candle is green (1) or red (-1)
+        df['candle_direction'] = (df['close'] > df['open']).astype(int)
+        df['candle_direction'] = df['candle_direction'].replace(0, -1)
+
+        # Calculate future green and red candles
+        future_green = [0] * len(df)
+        future_red = [0] * len(df)
+
+        for i in range(len(df)):
+            green_count = 0
+            red_count = 0
+            for j in range(i + 1, len(df)):
+                if df.loc[j, 'candle_direction'] == 1:
+                    green_count += 1
+                    if red_count > 0:  # Stop counting if trend reverses
+                        break
+                elif df.loc[j, 'candle_direction'] == -1:
+                    red_count += 1
+                    if green_count > 0:  # Stop counting if trend reverses
+                        break
+            future_green[i] = green_count
+            future_red[i] = red_count
+
+        df['future_green'] = future_green
+        df['future_red'] = future_red
+
+        # Drop the temporary candle_direction column
+        df.drop(columns=['candle_direction'], inplace=True)
+
+        logging.info("Added 'future_green' and 'future_red' predictive features.")
+        return df
+
+    except Exception as e:
+        logging.error(f"Error adding predictive candle features: {e}")
+        return df
 
 def merge_timeframes(data_dict, base_tf):
     """
@@ -270,6 +329,46 @@ def merge_timeframes(data_dict, base_tf):
         logging.error(f"Unexpected error during merging timeframes: {e}")
         return None
 
+def create_signal_optimization_target(df, profit_threshold=0.03, loss_threshold=-0.03, max_horizon=6):
+    """
+    Creates a target to optimize buy and sell signals based on maximizing profit or minimizing loss.
+
+    Parameters:
+        df (DataFrame): DataFrame containing 'close'.
+        profit_threshold (float): Minimum percentage profit for a Buy signal.
+        loss_threshold (float): Maximum percentage loss for a Sell signal.
+        max_horizon (int): Maximum number of candles to look ahead.
+
+    Returns:
+        DataFrame: Original DataFrame with an additional 'target' column.
+    """
+    try:
+        # Calculate rolling max and min prices within the future window
+        df['future_max'] = df['close'].rolling(window=max_horizon, min_periods=1).max().shift(-1)
+        df['future_min'] = df['close'].rolling(window=max_horizon, min_periods=1).min().shift(-1)
+
+        # Calculate future profit and loss
+        df['max_return'] = (df['future_max'] - df['close']) / df['close']
+        df['min_return'] = (df['future_min'] - df['close']) / df['close']
+
+        # Define the target
+        df['target'] = df.apply(
+            lambda row: 2 if row['max_return'] >= profit_threshold else
+                        (0 if row['min_return'] <= loss_threshold else 1),
+            axis=1
+        )
+
+        # Drop intermediate columns if no longer needed
+        df.drop(columns=['future_max', 'future_min', 'max_return', 'min_return'], inplace=True)
+
+        logging.info("Created signal optimization target.")
+        return df
+
+    except Exception as e:
+        logging.error(f"Error creating signal optimization target: {e}")
+        return df
+
+
 def prepare_dataset(df):
     """
     Prepares the dataset by defining the target variable and splitting into features and labels.
@@ -286,14 +385,16 @@ def prepare_dataset(df):
             return None, None
 
         # Define the target variable with three classes (-1, 0, 1)
-        df['return'] = df['close'].pct_change().shift(-1)
-        df['target'] = df['return'].apply(lambda x: 2 if x > 0.01 else (0 if x < -0.01 else 1))
+        # df['return'] = df['close'].pct_change().shift(-1)
+        # df['target'] = df['return'].apply(lambda x: 2 if x > 0.01 else (0 if x < -0.01 else 1))
+        
+        df = create_signal_optimization_target(df, profit_threshold=0.03, loss_threshold=-0.03, max_horizon=6)
         
         # Drop rows with NaN values
         df.dropna(inplace=True)
         
         # Features and Labels
-        X = df.drop(['timestamp', 'target', 'return'], axis=1)
+        X = df.drop(['timestamp', 'target'], axis=1)
         y = df['target']
         logging.info("Prepared dataset with features and target variable (0, 1, 2).")
         return X, y
@@ -344,111 +445,6 @@ def scale_features(X_train, X_test):
     except Exception as e:
         logging.error(f"Error scaling features: {e}")
         return None, None, None
-
-# def train_model(X_train, y_train):
-#     """
-#     Trains the XGBoost classifier using GridSearchCV for hyperparameter tuning.
-
-#     Parameters:
-#         X_train (array): Scaled training features.
-#         y_train (Series): Training labels.
-
-#     Returns:
-#         model: The best trained model.
-#     """
-#     try:
-#         weight = 20
-#         xgb = XGBClassifier(
-#             # objective='multi:softmax',  # Multi-class classification
-#             objective='multi:softprob',  # Multi-class classification
-#             num_class=3,  # Three classes: 0, 1, 2
-#             eval_metric='mlogloss',
-#             use_label_encoder=False,
-#             scale_pos_weight={0: weight, 1: 1, 2: weight+5}  # Assign higher weights to underrepresented classes
-#         )
-#         param_grid = {
-#             'n_estimators': [50, 100],
-#             'max_depth': [3, 5, 7],
-#             'learning_rate': [0.01, 0.05, 0.1]
-#         }
-#         tscv = TimeSeriesSplit(n_splits=5)
-#         grid_search = GridSearchCV(
-#             estimator=xgb,
-#             param_grid=param_grid,
-#             cv=tscv,
-#             scoring='accuracy',
-#             n_jobs=-1
-#         )
-#         grid_search.fit(X_train, y_train)
-#         best_model = grid_search.best_estimator_
-#         logging.info(f"Model training complete. Best parameters: {grid_search.best_params_}")
-#         return best_model
-#     except Exception as e:
-#         logging.error(f"Error training model: {e}")
-#         return None
-
-
-# def train_model(X_train, y_train):
-#     """
-#     Trains the XGBoost classifier using GridSearchCV for hyperparameter tuning.
-
-#     Parameters:
-#         X_train (array): Scaled training features.
-#         y_train (Series): Training labels.
-
-#     Returns:
-#         model: The best trained model.
-#     """
-#     try:
-#         # Log class distribution for reference
-#         class_counts = y_train.value_counts()
-#         logging.info(f"Class distribution: {class_counts}")
-
-#         # Initialize XGBoost classifier
-#         xgb = XGBClassifier(
-#             objective='multi:softprob',  # Multi-class classification with probabilities
-#             num_class=3,  # Number of classes
-#             eval_metric='mlogloss',  # Log loss for multi-class tasks
-#         )
-
-#         # Define an expanded hyperparameter grid
-#         param_grid = {
-#             'n_estimators': [50, 100, 200],
-#             'max_depth': [3, 5, 7],
-#             'learning_rate': [0.01, 0.05, 0.1],
-#             'subsample': [0.8, 1.0],
-#             'colsample_bytree': [0.8, 1.0],
-#             'gamma': [0, 1, 5]
-#         }
-
-#         # TimeSeriesSplit for cross-validation
-#         tscv = TimeSeriesSplit(n_splits=5)
-
-#         # GridSearchCV for hyperparameter tuning
-#         grid_search = GridSearchCV(
-#             estimator=xgb,
-#             param_grid=param_grid,
-#             cv=tscv,
-#             scoring='f1_macro',  # Use F1 Macro for imbalanced classes
-#             n_jobs=-1,
-#             verbose=1  # Show detailed output for debugging
-#         )
-
-#         # Train the model
-#         logging.info("Starting GridSearchCV...")
-#         grid_search.fit(X_train, y_train)
-
-#         # Retrieve the best model
-#         best_model = grid_search.best_estimator_
-#         logging.info(f"Model training complete. Best parameters: {grid_search.best_params_}")
-#         logging.info(f"Best F1 Macro Score: {grid_search.best_score_:.4f}")
-#         return best_model
-
-#     except Exception as e:
-#         logging.error(f"Error training model: {e}")
-#         return None
-
-
 
 def evaluate_model(model, X_test, y_test):
     """
@@ -604,54 +600,6 @@ def add_lag_features(df, columns, lags):
         logging.error(f"Error adding lag features: {e}")
         return df
 
-def calculate_atr(df, period=14):
-    """
-    Calculates the Average True Range (ATR) for the given DataFrame.
-
-    Parameters:
-        df (DataFrame): DataFrame with columns 'high', 'low', 'close'.
-        period (int): The period over which to calculate the ATR.
-
-    Returns:
-        DataFrame: The original DataFrame with an additional 'ATR' column.
-    """
-    try:
-        df['high_low'] = df['high'] - df['low']
-        df['high_close'] = (df['high'] - df['close'].shift()).abs()
-        df['low_close'] = (df['low'] - df['close'].shift()).abs()
-
-        df['true_range'] = df[['high_low', 'high_close', 'low_close']].max(axis=1)
-        df['ATR'] = df['true_range'].rolling(window=period).mean()
-
-        # Drop intermediate columns used in calculation
-        df.drop(['high_low', 'high_close', 'low_close', 'true_range'], axis=1, inplace=True)
-
-        logging.info(f"Calculated ATR for period: {period}")
-        return df
-    except Exception as e:
-        logging.error(f"Error calculating ATR: {e}")
-        return df
-
-def calculate_rate_of_change(df, column, period=14):
-    """
-    Calculates the Rate of Change (ROC) for the given column in the DataFrame.
-
-    Parameters:
-        df (DataFrame): The input DataFrame containing the data.
-        column (str): The column name for which ROC is to be calculated.
-        period (int): The period over which to calculate the ROC.
-
-    Returns:
-        DataFrame: The original DataFrame with an additional 'ROC' column.
-    """
-    try:
-        df[f'ROC_{column}_{period}'] = df[column].pct_change(periods=period) * 100
-        logging.info(f"Calculated Rate of Change (ROC) for column '{column}' over period {period}")
-        return df
-    except Exception as e:
-        logging.error(f"Error calculating Rate of Change (ROC): {e}")
-        return df
-
 def objective(trial, X_train, y_train, X_val, y_val):
     """
     Objective function for Optuna to optimize hyperparameters of XGBClassifier.
@@ -667,7 +615,7 @@ def objective(trial, X_train, y_train, X_val, y_val):
         float: The weighted F1-score on the validation set.
     """
     param = {
-        'objective': 'multi:softmax',
+        'objective': 'multi:softprob',
         'num_class': 3,
         'eval_metric': 'mlogloss',
         'use_label_encoder': False,
@@ -677,6 +625,8 @@ def objective(trial, X_train, y_train, X_val, y_val):
         'scale_pos_weight': trial.suggest_categorical('scale_pos_weight', [{0: 10, 1: 1, 2: 10}, {0: 15, 1: 1, 2: 15}, {0: 20, 1: 1, 2: 20}])
     }
     
+
+
     model = XGBClassifier(**param)
     model.fit(X_train, y_train)
     y_pred = model.predict(X_val)
@@ -719,6 +669,37 @@ def fine_tune_model(X_train, y_train):
         logging.error(f"Error during fine-tuning: {e}")
         return None
 
+def get_top_features(model, feature_names, top_n=20):
+    """
+    Returns the top N most relevant features based on feature importance.
+
+    Parameters:
+        model: Trained XGBoost model.
+        feature_names (list): List of feature names corresponding to the feature matrix.
+        top_n (int): Number of top features to return.
+
+    Returns:
+        list: A list of tuples with feature names and their importance scores.
+    """
+    try:
+        # Get feature importance scores
+        importance = model.feature_importances_
+        
+        # Create a DataFrame for better sorting
+        feature_importance_df = pd.DataFrame({
+            'Feature': feature_names,
+            'Importance': importance
+        }).sort_values(by='Importance', ascending=False)
+        
+        # Extract the top N features as a list of tuples
+        top_features = feature_importance_df.head(top_n).to_records(index=False)
+        top_features_list = [(row['Feature'], row['Importance']) for row in top_features]
+        
+        logging.info(f"Retrieved top {top_n} features.")
+        return top_features_list
+    except Exception as e:
+        logging.error(f"Error retrieving top features: {e}")
+        return []
 
 
 def main():
@@ -752,6 +733,7 @@ def main():
     for tf in timeframes:
         if tf in data_dict:
             data_dict[tf] = calculate_indicators(data_dict[tf])
+            data_dict[tf] = add_predictive_candle_features(data_dict[tf])
             logging.info(f"Calculated indicators for timeframe {tf}")
     
     # Step 3: Merge Data
@@ -761,9 +743,12 @@ def main():
         return
     
     # merged_df = add_lag_features(merged_df, ['close', 'volume', 'RSI', 'MACD'], lags=3)
-    merged_df = add_lag_features(merged_df, ['close_1h'], lags=4)
+    merged_df = add_lag_features(merged_df, ['close'], lags=4)
     merged_df = add_lag_features(merged_df, ['close_4h'], lags=2)
     merged_df = add_lag_features(merged_df, ['close_1d'], lags=2)
+    merged_df['future_green_ratio'] = merged_df['future_green'] / merged_df['future_green_4h']
+    merged_df['future_red_ratio'] = merged_df['future_red'] / merged_df['future_red_4h']
+
     logging.info("Added lag features to the merged DataFrame.")
 
     # # Step 5: Calculate ATR
@@ -801,7 +786,14 @@ def main():
     if model is None:
         logging.error("Model fine-tuning failed. Exiting.")
         return
-    
+    if model is not None:
+        # Get the top features as a list
+        top_features = get_top_features(model, X.columns, top_n=20)
+        
+        # Display the list of features
+        for rank, (feature, importance) in enumerate(top_features, start=1):
+            print(f"{rank}. {feature}: {importance:.4f}")
+        
     # Step 8: Evaluate Model
     evaluate_model(model, X_test_scaled, y_test)
     
