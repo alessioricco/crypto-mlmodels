@@ -1,5 +1,10 @@
-import pandas as pd
 import numpy as np
+import pandas as pd
+# import pandas_ta as ta
+
+# import talib as ta
+import finta as TA
+
 import logging
 import argparse
 import os
@@ -118,45 +123,116 @@ def resample_dataframe(df, target_timeframe):
 
 
 
+# def calculate_indicators(df):
+#     """
+#     Calculates technical indicators and adds them to the DataFrame.
+
+#     Parameters:
+#         df (DataFrame): DataFrame containing at least the 'close' price column.
+
+#     Returns:
+#         DataFrame: The original DataFrame with new indicator columns added.
+#     """
+#     try:
+#         # Moving Averages
+#         df['MA20'] = df['close'].rolling(window=20).mean()
+#         df['MA50'] = df['close'].rolling(window=50).mean()
+        
+#         # Relative Strength Index (RSI)
+#         delta = df['close'].diff()
+#         up = delta.clip(lower=0)
+#         down = -1 * delta.clip(upper=0)
+#         period = 14
+#         gain = up.rolling(window=period).mean()
+#         loss = down.rolling(window=period).mean()
+#         RS = gain / loss
+#         df['RSI'] = 100.0 - (100.0 / (1.0 + RS))
+
+#         # Adding Symbolic Features
+#         df['is_oversold'] = np.where(df['RSI'] < 30, 1, 0)
+#         df['is_overbought'] = np.where(df['RSI'] > 70, 1, 0)
+        
+#         # Moving Average Convergence Divergence (MACD)
+#         exp1 = df['close'].ewm(span=12, adjust=False).mean()
+#         exp2 = df['close'].ewm(span=26, adjust=False).mean()
+#         df['MACD'] = exp1 - exp2
+
+#         logging.info("Calculated technical indicators.")
+#         return df
+#     except Exception as e:
+#         logging.error(f"Error calculating indicators: {e}")
+#         return df
+
+
+# import pandas as pd
+# # import pandas_ta as ta
+# import logging
+
+# from finta import TA
+# import pandas as pd
+# import logging
+
 def calculate_indicators(df):
     """
-    Calculates technical indicators and adds them to the DataFrame.
+    Calculates technical indicators and adds them to the DataFrame using Finta.
 
     Parameters:
-        df (DataFrame): DataFrame containing at least the 'close' price column.
+        df (DataFrame): DataFrame containing at least the 'close', 'high', and 'low' price columns.
 
     Returns:
         DataFrame: The original DataFrame with new indicator columns added.
     """
     try:
-        # Moving Averages
-        df['MA20'] = df['close'].rolling(window=20).mean()
-        df['MA50'] = df['close'].rolling(window=50).mean()
-        
-        # Relative Strength Index (RSI)
-        delta = df['close'].diff()
-        up = delta.clip(lower=0)
-        down = -1 * delta.clip(upper=0)
-        period = 14
-        gain = up.rolling(window=period).mean()
-        loss = down.rolling(window=period).mean()
-        RS = gain / loss
-        df['RSI'] = 100.0 - (100.0 / (1.0 + RS))
+        # Validate input
+        required_columns = {'close', 'high', 'low'}
+        if not required_columns.issubset(df.columns):
+            logging.error(f"Input DataFrame must contain the following columns: {required_columns}")
+            return df
 
-        # Adding Symbolic Features
-        df['is_oversold'] = np.where(df['RSI'] < 30, 1, 0)
-        df['is_overbought'] = np.where(df['RSI'] > 70, 1, 0)
-        
-        # Moving Average Convergence Divergence (MACD)
-        exp1 = df['close'].ewm(span=12, adjust=False).mean()
-        exp2 = df['close'].ewm(span=26, adjust=False).mean()
-        df['MACD'] = exp1 - exp2
+        # Add Moving Averages
+        df['MA20'] = TA.SMA(df, 20)  # 20-period Simple Moving Average
+        df['MA50'] = TA.SMA(df, 50)  # 50-period Simple Moving Average
 
-        logging.info("Calculated technical indicators.")
+        # Add RSI
+        df['RSI'] = TA.RSI(df, 14)  # 14-period Relative Strength Index
+
+        # Add Overbought and Oversold Flags
+        df['is_oversold'] = (df['RSI'] < 30).astype(int)
+        df['is_overbought'] = (df['RSI'] > 70).astype(int)
+
+        # Add MACD
+        macd = TA.MACD(df)  # MACD is returned as a dictionary
+        df['MACD'] = macd['MACD']  # MACD line
+        df['Signal_Line'] = macd['SIGNAL']  # Signal line
+        df['MACD_Histogram'] = macd['MACD'] - macd['SIGNAL']  # Histogram (difference between MACD and Signal line)
+
+        # Add Bullish and Bearish Signals
+        df['bullish_signal'] = ((df['MACD'] > df['Signal_Line']) & (df['MACD'] > 0)).astype(int)
+        df['bearish_signal'] = ((df['MACD'] < df['Signal_Line']) & (df['MACD'] < 0)).astype(int)
+
+        # Add ROC (Rate of Change)
+        df['ROC'] = TA.ROC(df, 12)  # 12-period Rate of Change
+
+        # Add ATR (Average True Range)
+        df['ATR'] = TA.ATR(df, 14)  # 14-period Average True Range
+
+        # Add Numeric Trend
+        df['trend'] = (df['MA20'] > df['MA50']).astype(int) * 2 - 1  # 1 for bullish, -1 for bearish
+
+        df['PCP'] = df['close'].pct_change() * 100
+        df['PPO'] = ((df['EMA20'] - df['EMA50']) / df['EMA50']) * 100
+
+        # Fill NaN values (optional)
+        df.fillna(method='bfill', inplace=True)
+
+        logging.info("Calculated technical indicators successfully.")
         return df
+
     except Exception as e:
         logging.error(f"Error calculating indicators: {e}")
         return df
+
+
 
 def merge_timeframes(data_dict, base_tf):
     """
@@ -269,45 +345,109 @@ def scale_features(X_train, X_test):
         logging.error(f"Error scaling features: {e}")
         return None, None, None
 
-def train_model(X_train, y_train):
-    """
-    Trains the XGBoost classifier using GridSearchCV for hyperparameter tuning.
+# def train_model(X_train, y_train):
+#     """
+#     Trains the XGBoost classifier using GridSearchCV for hyperparameter tuning.
 
-    Parameters:
-        X_train (array): Scaled training features.
-        y_train (Series): Training labels.
+#     Parameters:
+#         X_train (array): Scaled training features.
+#         y_train (Series): Training labels.
 
-    Returns:
-        model: The best trained model.
-    """
-    try:
-        xgb = XGBClassifier(
-            objective='multi:softmax',  # Multi-class classification
-            num_class=3,  # Three classes: 0, 1, 2
-            eval_metric='mlogloss',
-            use_label_encoder=False,
-            scale_pos_weight={0: 10, 1: 1, 2: 10}  # Assign higher weights to underrepresented classes
-        )
-        param_grid = {
-            'n_estimators': [50, 100],
-            'max_depth': [3, 5, 7],
-            'learning_rate': [0.01, 0.05, 0.1]
-        }
-        tscv = TimeSeriesSplit(n_splits=5)
-        grid_search = GridSearchCV(
-            estimator=xgb,
-            param_grid=param_grid,
-            cv=tscv,
-            scoring='accuracy',
-            n_jobs=-1
-        )
-        grid_search.fit(X_train, y_train)
-        best_model = grid_search.best_estimator_
-        logging.info(f"Model training complete. Best parameters: {grid_search.best_params_}")
-        return best_model
-    except Exception as e:
-        logging.error(f"Error training model: {e}")
-        return None
+#     Returns:
+#         model: The best trained model.
+#     """
+#     try:
+#         weight = 20
+#         xgb = XGBClassifier(
+#             # objective='multi:softmax',  # Multi-class classification
+#             objective='multi:softprob',  # Multi-class classification
+#             num_class=3,  # Three classes: 0, 1, 2
+#             eval_metric='mlogloss',
+#             use_label_encoder=False,
+#             scale_pos_weight={0: weight, 1: 1, 2: weight+5}  # Assign higher weights to underrepresented classes
+#         )
+#         param_grid = {
+#             'n_estimators': [50, 100],
+#             'max_depth': [3, 5, 7],
+#             'learning_rate': [0.01, 0.05, 0.1]
+#         }
+#         tscv = TimeSeriesSplit(n_splits=5)
+#         grid_search = GridSearchCV(
+#             estimator=xgb,
+#             param_grid=param_grid,
+#             cv=tscv,
+#             scoring='accuracy',
+#             n_jobs=-1
+#         )
+#         grid_search.fit(X_train, y_train)
+#         best_model = grid_search.best_estimator_
+#         logging.info(f"Model training complete. Best parameters: {grid_search.best_params_}")
+#         return best_model
+#     except Exception as e:
+#         logging.error(f"Error training model: {e}")
+#         return None
+
+
+# def train_model(X_train, y_train):
+#     """
+#     Trains the XGBoost classifier using GridSearchCV for hyperparameter tuning.
+
+#     Parameters:
+#         X_train (array): Scaled training features.
+#         y_train (Series): Training labels.
+
+#     Returns:
+#         model: The best trained model.
+#     """
+#     try:
+#         # Log class distribution for reference
+#         class_counts = y_train.value_counts()
+#         logging.info(f"Class distribution: {class_counts}")
+
+#         # Initialize XGBoost classifier
+#         xgb = XGBClassifier(
+#             objective='multi:softprob',  # Multi-class classification with probabilities
+#             num_class=3,  # Number of classes
+#             eval_metric='mlogloss',  # Log loss for multi-class tasks
+#         )
+
+#         # Define an expanded hyperparameter grid
+#         param_grid = {
+#             'n_estimators': [50, 100, 200],
+#             'max_depth': [3, 5, 7],
+#             'learning_rate': [0.01, 0.05, 0.1],
+#             'subsample': [0.8, 1.0],
+#             'colsample_bytree': [0.8, 1.0],
+#             'gamma': [0, 1, 5]
+#         }
+
+#         # TimeSeriesSplit for cross-validation
+#         tscv = TimeSeriesSplit(n_splits=5)
+
+#         # GridSearchCV for hyperparameter tuning
+#         grid_search = GridSearchCV(
+#             estimator=xgb,
+#             param_grid=param_grid,
+#             cv=tscv,
+#             scoring='f1_macro',  # Use F1 Macro for imbalanced classes
+#             n_jobs=-1,
+#             verbose=1  # Show detailed output for debugging
+#         )
+
+#         # Train the model
+#         logging.info("Starting GridSearchCV...")
+#         grid_search.fit(X_train, y_train)
+
+#         # Retrieve the best model
+#         best_model = grid_search.best_estimator_
+#         logging.info(f"Model training complete. Best parameters: {grid_search.best_params_}")
+#         logging.info(f"Best F1 Macro Score: {grid_search.best_score_:.4f}")
+#         return best_model
+
+#     except Exception as e:
+#         logging.error(f"Error training model: {e}")
+#         return None
+
 
 
 def evaluate_model(model, X_test, y_test):
@@ -620,16 +760,19 @@ def main():
         logging.error("Merging data failed. Exiting.")
         return
     
-    merged_df = add_lag_features(merged_df, ['close', 'volume', 'RSI', 'MACD'], lags=3)
+    # merged_df = add_lag_features(merged_df, ['close', 'volume', 'RSI', 'MACD'], lags=3)
+    merged_df = add_lag_features(merged_df, ['close_1h'], lags=4)
+    merged_df = add_lag_features(merged_df, ['close_4h'], lags=2)
+    merged_df = add_lag_features(merged_df, ['close_1d'], lags=2)
     logging.info("Added lag features to the merged DataFrame.")
 
-    # Step 5: Calculate ATR
-    merged_df = calculate_atr(merged_df)
-    logging.info("Calculated ATR for the merged DataFrame.")
+    # # Step 5: Calculate ATR
+    # merged_df = calculate_atr(merged_df)
+    # logging.info("Calculated ATR for the merged DataFrame.")
     
-    # Step 6: Calculate Rate of Change (ROC)
-    merged_df = calculate_rate_of_change(merged_df, 'close', period=14)
-    logging.info("Calculated Rate of Change (ROC) for the merged DataFrame.")
+    # # Step 6: Calculate Rate of Change (ROC)
+    # merged_df = calculate_rate_of_change(merged_df, 'close', period=14)
+    # logging.info("Calculated Rate of Change (ROC) for the merged DataFrame.")
     
     
     # Step 4: Prepare Dataset
